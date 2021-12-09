@@ -42,6 +42,7 @@ import (
 	"go.uber.org/goleak"
 
 	"github.com/prometheus/prometheus/model/labels"
+	"github.com/prometheus/prometheus/model/relabel"
 	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
 	"github.com/prometheus/prometheus/tsdb/chunks"
@@ -1395,6 +1396,8 @@ func (c *mockCompactorFailing) Write(dest string, b BlockReader, mint, maxt int6
 func (*mockCompactorFailing) Compact(string, []string, []*Block) (ulid.ULID, error) {
 	return ulid.ULID{}, nil
 }
+
+func (*mockCompactorFailing) AddRelabelConfig([]*relabel.Config) {}
 
 func TestTimeRetention(t *testing.T) {
 	db := openTestDB(t, nil, []int64{1000})

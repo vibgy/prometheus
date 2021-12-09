@@ -30,6 +30,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/prometheus/prometheus/model/relabel"
 	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
 	"github.com/prometheus/prometheus/tsdb/chunks"
@@ -72,6 +73,8 @@ type Compactor interface {
 	//  * The source dirs are marked Deletable.
 	//  * Returns empty ulid.ULID{}.
 	Compact(dest string, dirs []string, open []*Block) (ulid.ULID, error)
+
+	AddRelabelConfig(relabelConfig []*relabel.Config)
 }
 
 // LeveledCompactor implements the Compactor interface.
@@ -83,6 +86,7 @@ type LeveledCompactor struct {
 	ctx                      context.Context
 	maxBlockChunkSegmentSize int64
 	mergeFunc                storage.VerticalChunkSeriesMergeFunc
+	relabelConfig            []*relabel.Config
 }
 
 type compactorMetrics struct {
@@ -177,6 +181,10 @@ func NewLeveledCompactorWithChunkSize(ctx context.Context, r prometheus.Register
 type dirMeta struct {
 	dir  string
 	meta *BlockMeta
+}
+
+func (c *LeveledCompactor) AddRelabelConfig(relabelConfig []*relabel.Config) {
+	c.relabelConfig = relabelConfig
 }
 
 // Plan returns a list of compactable blocks in the provided directory.
@@ -726,7 +734,7 @@ func (c *LeveledCompactor) populateBlock(blocks []BlockReader, meta *BlockMeta, 
 		}
 		all = indexr.SortedPostings(all)
 		// Blocks meta is half open: [min, max), so subtract 1 to ensure we don't hold samples with exact meta.MaxTime timestamp.
-		sets = append(sets, newBlockChunkSeriesSet(indexr, chunkr, tombsr, all, meta.MinTime, meta.MaxTime-1, false))
+		sets = append(sets, newBlockChunkSeriesSet(indexr, chunkr, tombsr, all, meta.MinTime, meta.MaxTime-1, false, c.relabelConfig))
 		syms := indexr.Symbols()
 		if i == 0 {
 			symbols = syms

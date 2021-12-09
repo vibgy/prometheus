@@ -30,6 +30,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/prometheus/prometheus/model/labels"
+	"github.com/prometheus/prometheus/model/relabel"
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
 	"github.com/prometheus/prometheus/tsdb/chunks"
 	"github.com/prometheus/prometheus/tsdb/fileutil"
@@ -939,9 +940,15 @@ func TestCompaction_populateBlock(t *testing.T) {
 				ir, cr, mint, maxt := createIdxChkReaders(t, b)
 				blocks = append(blocks, &mockBReader{ir: ir, cr: cr, mint: mint, maxt: maxt})
 			}
+			relabels := relabel.Config{
+				Action: relabel.LabelDrop,
+				Regex:  relabel.MustNewRegexp("b"),
+			}
+			relabelConfig := []*relabel.Config{&relabels}
 
 			c, err := NewLeveledCompactor(context.Background(), nil, nil, []int64{0}, nil, nil)
 			require.NoError(t, err)
+			c.AddRelabelConfig(relabelConfig)
 
 			meta := &BlockMeta{
 				MinTime: tc.compactMinTime,
