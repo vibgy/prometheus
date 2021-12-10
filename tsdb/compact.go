@@ -30,6 +30,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/prometheus/prometheus/model/relabel"
 	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
 	"github.com/prometheus/prometheus/tsdb/chunks"
@@ -72,6 +73,8 @@ type Compactor interface {
 	//  * The source dirs are marked Deletable.
 	//  * Returns empty ulid.ULID{}.
 	Compact(dest string, dirs []string, open []*Block) (ulid.ULID, error)
+
+	AddRelabelConfig(relabelConfig []*relabel.Config)
 }
 
 // LeveledCompactor implements the Compactor interface.
@@ -83,6 +86,7 @@ type LeveledCompactor struct {
 	ctx                      context.Context
 	maxBlockChunkSegmentSize int64
 	mergeFunc                storage.VerticalChunkSeriesMergeFunc
+	relabelConfig            []*relabel.Config
 }
 
 type compactorMetrics struct {
@@ -177,6 +181,10 @@ func NewLeveledCompactorWithChunkSize(ctx context.Context, r prometheus.Register
 type dirMeta struct {
 	dir  string
 	meta *BlockMeta
+}
+
+func (c *LeveledCompactor) AddRelabelConfig(relabelConfig []*relabel.Config) {
+	c.relabelConfig = relabelConfig
 }
 
 // Plan returns a list of compactable blocks in the provided directory.
@@ -668,6 +676,7 @@ func (c *LeveledCompactor) populateBlock(blocks []BlockReader, meta *BlockMeta, 
 
 	var (
 		sets        []storage.ChunkSeriesSet
+		reSets      []storage.SeriesSet
 		symbols     index.StringIter
 		closers     []io.Closer
 		overlapping bool
@@ -726,13 +735,59 @@ func (c *LeveledCompactor) populateBlock(blocks []BlockReader, meta *BlockMeta, 
 		}
 		all = indexr.SortedPostings(all)
 		// Blocks meta is half open: [min, max), so subtract 1 to ensure we don't hold samples with exact meta.MaxTime timestamp.
-		sets = append(sets, newBlockChunkSeriesSet(indexr, chunkr, tombsr, all, meta.MinTime, meta.MaxTime-1, false))
+		sets = append(sets, newBlockChunkSeriesSet(indexr, chunkr, tombsr, all, meta.MinTime, meta.MaxTime-1, false, c.relabelConfig))
+
+		// Need another series set, so we could get the labels out
+		if c.relabelConfig != nil {
+			ball, err := indexr.Postings(k, v)
+			if err != nil {
+				return err
+			}
+			ball = indexr.SortedPostings(ball)
+			reSets = append(reSets, newBlockSeriesSet(indexr, newNopChunkReader(), tombsr, ball, meta.MinTime, meta.MaxTime-1, false, c.relabelConfig))
+		}
+
 		syms := indexr.Symbols()
 		if i == 0 {
 			symbols = syms
 			continue
 		}
 		symbols = NewMergedStringIter(symbols, syms)
+	}
+
+	// TODO(gnolkha): Edit symbols here!
+	if c.relabelConfig != nil {
+		reSet := reSets[0]
+		if len(reSets) > 1 {
+			reSet = storage.NewMergeSeriesSet(reSets, storage.ChainedSeriesMerge)
+		}
+
+		// TODO: Add metric
+		var prunedSymbols = map[string]struct{}{}
+		for reSet.Next() {
+			select {
+			case <-c.ctx.Done():
+				return c.ctx.Err()
+			default:
+			}
+			s := reSet.At()
+			lbls := s.Labels()
+			remainingLabels := relabel.Process(lbls, c.relabelConfig...)
+			if len(remainingLabels) == 0 {
+				// TODO: handle this special case
+			} else {
+				for _, lb := range remainingLabels {
+					prunedSymbols[lb.Name] = struct{}{}
+					prunedSymbols[lb.Value] = struct{}{}
+				}
+			}
+		}
+		symbolsSlice := make([]string, 0, len(prunedSymbols))
+		for s := range prunedSymbols {
+			symbolsSlice = append(symbolsSlice, s)
+		}
+		sort.Strings(symbolsSlice)
+		symbols = index.NewStringListIter(symbolsSlice)
 	}
 
 	for symbols.Next() {

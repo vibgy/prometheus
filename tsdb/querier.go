@@ -22,6 +22,7 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/prometheus/prometheus/model/labels"
+	"github.com/prometheus/prometheus/model/relabel"
 	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
 	"github.com/prometheus/prometheus/tsdb/chunks"
@@ -139,11 +140,11 @@ func (q *blockQuerier) Select(sortSeries bool, hints *storage.SelectHints, ms ..
 		disableTrimming = hints.DisableTrimming
 		if hints.Func == "series" {
 			// When you're only looking up metadata (for example series API), you don't need to load any chunks.
-			return newBlockSeriesSet(q.index, newNopChunkReader(), q.tombstones, p, mint, maxt, disableTrimming)
+			return newBlockSeriesSet(q.index, newNopChunkReader(), q.tombstones, p, mint, maxt, disableTrimming, nil)
 		}
 	}
 
-	return newBlockSeriesSet(q.index, q.chunks, q.tombstones, p, mint, maxt, disableTrimming)
+	return newBlockSeriesSet(q.index, q.chunks, q.tombstones, p, mint, maxt, disableTrimming, nil)
 }
 
 // blockChunkQuerier provides chunk querying access to a single block database.
@@ -176,7 +177,7 @@ func (q *blockChunkQuerier) Select(sortSeries bool, hints *storage.SelectHints, 
 	if sortSeries {
 		p = q.index.SortedPostings(p)
 	}
-	return newBlockChunkSeriesSet(q.index, q.chunks, q.tombstones, p, mint, maxt, disableTrimming)
+	return newBlockChunkSeriesSet(q.index, q.chunks, q.tombstones, p, mint, maxt, disableTrimming, nil)
 }
 
 func findSetMatches(pattern string) []string {
@@ -443,9 +444,10 @@ type blockBaseSeriesSet struct {
 	currIterFn func() *populateWithDelGenericSeriesIterator
 	currLabels labels.Labels
 
-	bufChks []chunks.Meta
-	bufLbls labels.Labels
-	err     error
+	bufChks       []chunks.Meta
+	bufLbls       labels.Labels
+	relabelConfig []*relabel.Config
+	err           error
 }
 
 func (b *blockBaseSeriesSet) Next() bool {
@@ -514,7 +516,15 @@ func (b *blockBaseSeriesSet) Next() bool {
 			intervals = intervals.Add(tombstones.Interval{Mint: b.maxt + 1, Maxt: math.MaxInt64})
 		}
 
-		b.currLabels = make(labels.Labels, len(b.bufLbls))
+		bufLabels := b.bufLbls
+		if b.relabelConfig != nil {
+			bufLabels = relabel.Process(b.bufLbls, b.relabelConfig...)
+		}
+		if len(bufLabels) == 0 {
+			continue
+		}
+
+		b.currLabels = make(labels.Labels, len(bufLabels))
 		copy(b.currLabels, b.bufLbls)
 
 		b.currIterFn = func() *populateWithDelGenericSeriesIterator {
@@ -730,7 +740,7 @@ type blockSeriesSet struct {
 	blockBaseSeriesSet
 }
 
-func newBlockSeriesSet(i IndexReader, c ChunkReader, t tombstones.Reader, p index.Postings, mint, maxt int64, disableTrimming bool) storage.SeriesSet {
+func newBlockSeriesSet(i IndexReader, c ChunkReader, t tombstones.Reader, p index.Postings, mint, maxt int64, disableTrimming bool, relabelConfig []*relabel.Config) storage.SeriesSet {
 	return &blockSeriesSet{
 		blockBaseSeriesSet{
 			index:           i,
@@ -741,6 +751,7 @@ func newBlockSeriesSet(i IndexReader, c ChunkReader, t tombstones.Reader, p inde
 			maxt:            maxt,
 			disableTrimming: disableTrimming,
 			bufLbls:         make(labels.Labels, 0, 10),
+			relabelConfig:   relabelConfig,
 		},
 	}
 }
@@ -763,7 +774,7 @@ type blockChunkSeriesSet struct {
 	blockBaseSeriesSet
 }
 
-func newBlockChunkSeriesSet(i IndexReader, c ChunkReader, t tombstones.Reader, p index.Postings, mint, maxt int64, disableTrimming bool) storage.ChunkSeriesSet {
+func newBlockChunkSeriesSet(i IndexReader, c ChunkReader, t tombstones.Reader, p index.Postings, mint, maxt int64, disableTrimming bool, relabelConfig []*relabel.Config) storage.ChunkSeriesSet {
 	return &blockChunkSeriesSet{
 		blockBaseSeriesSet{
 			index:           i,
@@ -774,6 +785,7 @@ func newBlockChunkSeriesSet(i IndexReader, c ChunkReader, t tombstones.Reader, p
 			maxt:            maxt,
 			disableTrimming: disableTrimming,
 			bufLbls:         make(labels.Labels, 0, 10),
+			relabelConfig:   relabelConfig,
 		},
 	}
 }
