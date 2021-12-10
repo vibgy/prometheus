@@ -493,6 +493,7 @@ func TestCompaction_populateBlock(t *testing.T) {
 		compactMaxTime     int64 // When not defined the test runner sets a default of math.MaxInt64.
 		expSeriesSamples   []seriesSamples
 		expErr             error
+		enableRelabel      bool
 	}{
 		{
 			title:              "Populate block from empty input should return error.",
@@ -933,6 +934,36 @@ func TestCompaction_populateBlock(t *testing.T) {
 				},
 			},
 		},
+		{
+			title: "Drop label, while compacting partially overlapping blocks",
+			inputSeriesSamples: [][]seriesSamples{
+				{
+					{
+						lset:   map[string]string{"a": "1", "b": "2"},
+						chunks: [][]sample{{{t: 0}, {t: 6902464}}, {{t: 6961968}, {t: 7080976}}},
+					},
+				},
+				{
+					{
+						lset:   map[string]string{"a": "1", "b": "2"},
+						chunks: [][]sample{{{t: 3600000}, {t: 13953696}}, {{t: 14042952}, {t: 14221464}}},
+					},
+				},
+				{
+					{
+						lset:   map[string]string{"a": "1", "b": "2"},
+						chunks: [][]sample{{{t: 10800000}, {t: 14251232}}, {{t: 14280984}, {t: 14340488}}},
+					},
+				},
+			},
+			expSeriesSamples: []seriesSamples{
+				{
+					lset:   map[string]string{"a": "1"},
+					chunks: [][]sample{{{t: 0}, {t: 3600000}, {t: 6902464}, {t: 6961968}, {t: 7080976}, {t: 10800000}, {t: 13953696}, {t: 14042952}, {t: 14221464}, {t: 14251232}}, {{t: 14280984}, {t: 14340488}}},
+				},
+			},
+			enableRelabel: true,
+		},
 	} {
 		t.Run(tc.title, func(t *testing.T) {
 			blocks := make([]BlockReader, 0, len(tc.inputSeriesSamples))
@@ -944,8 +975,10 @@ func TestCompaction_populateBlock(t *testing.T) {
 				Action: relabel.LabelDrop,
 				Regex:  relabel.MustNewRegexp("b"),
 			}
-			relabelConfig := []*relabel.Config{&relabels}
-
+			var relabelConfig []*relabel.Config
+			if tc.enableRelabel {
+				relabelConfig = []*relabel.Config{&relabels}
+			}
 			c, err := NewLeveledCompactor(context.Background(), nil, nil, []int64{0}, nil, nil)
 			require.NoError(t, err)
 			c.AddRelabelConfig(relabelConfig)

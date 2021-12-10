@@ -520,6 +520,10 @@ func (b *blockBaseSeriesSet) Next() bool {
 		if b.relabelConfig != nil {
 			bufLabels = relabel.Process(b.bufLbls, b.relabelConfig...)
 		}
+		if len(bufLabels) == 0 {
+			continue
+		}
+
 		b.currLabels = make(labels.Labels, len(bufLabels))
 		copy(b.currLabels, b.bufLbls)
 
